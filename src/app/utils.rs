@@ -20,10 +20,7 @@ impl App {
             .width(Length::Fill);
         // .height(Length::Shrink);
 
-        let handle = match self.book_covers.get(&book.name) {
-            Some(h) => cosmic::widget::image::Handle::from_memory(h.clone()),
-            None => cosmic::widget::image::Handle::from_path("res/covers/rr-image.png"),
-        };
+        let handle = self.get_image_handle(book);
 
         card_content = card_content.push(
             cosmic::iced::widget::image(handle.clone())
@@ -35,8 +32,13 @@ impl App {
         card_content = card_content.push(
             cosmic::widget::text(book.name.clone()).height(Length::Fixed(spacing.space_xl as f32)),
         );
+        let button = widget::button::custom_image_button(card_content, None)
+            .on_press(Message::ToggleContextPage(ContextPage::BookContext(
+                book.clone(),
+            )))
+            .style(cosmic::theme::Button::Image);
 
-        let card = container(card_content)
+        let card = container(button)
             .padding(spacing.space_xxs)
             .width(Length::Fixed(size.width))
             .height(Length::Shrink)
@@ -53,5 +55,48 @@ impl App {
         let content = response.bytes()?;
         _ = cosmic::widget::image::Handle::from_memory(content.clone());
         Ok(content)
+    }
+
+    pub fn get_image_handle(&self, book: &Book) -> cosmic::widget::image::Handle {
+        match self.book_covers.get(&book.name) {
+            Some(h) => cosmic::widget::image::Handle::from_memory(h.clone()),
+            None => cosmic::widget::image::Handle::from_path("res/covers/rr-image.png"),
+        }
+    }
+
+    pub fn log_error(&self, err: String) -> Command<Message> {
+        Command::perform(
+            async move { message::app(Message::Log(LogMessage::Error(err))) },
+            |x| x,
+        )
+    }
+
+    pub fn get_book_from_storage(
+        &self,
+        url: String,
+    ) -> Result<Option<Book>, Box<dyn std::error::Error>> {
+        let conn = rusqlite::Connection::open(STORAGE_FILE)?;
+        let mut stmt = conn
+            .prepare("SELECT source, url, name, image, in_library FROM books WHERE url = :url;")?;
+
+        let book_iter = stmt.query_map(&[(":url", &url)], |row| {
+            Ok(Book::new(
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?;
+
+        for book in book_iter {
+            let mut book = book.unwrap();
+            if book.image == Some("".into()) {
+                book.image = None;
+            }
+            return Ok(Some(book));
+        }
+
+        Ok(None)
     }
 }

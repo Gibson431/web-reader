@@ -61,7 +61,7 @@ impl Source for RoyalRoadSource {
             img = None;
         }
 
-        let book = Book::new(self.as_str(), url, name, img);
+        let book = Book::new(self.as_str(), url, name, img, false);
         Ok(book)
     }
 

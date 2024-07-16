@@ -1,6 +1,5 @@
 use super::book::*;
 
-
 // pub fn book_card(&self, book: &Book, size: Size) -> Element<Message> {
 //     let spacing = theme::active().cosmic().spacing;
 

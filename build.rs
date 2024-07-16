@@ -1,6 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Rebuild if i18n files change
-    println!("cargo:rerun-if-changed=i18n");
+    println!("cargo:rerun-if-changed=i18n/*");
 
     // Emit version information (if not cached by just vendor)
     let mut vergen = vergen::EmitBuilder::builder();

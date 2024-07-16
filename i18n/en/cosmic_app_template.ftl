@@ -1,5 +1,9 @@
 app-title = COSMIC App Template
 about = About
+about-context-title = About
 view = View
 welcome = Welcome to COSMIC! ✨
 settings = Settings
+settings-context-title = Settings
+book-context-title = Book
+site = Site

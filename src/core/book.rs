@@ -9,16 +9,24 @@ pub struct Book {
     pub image: Option<String>,
     pub name: String,
     pub chapters: Vec<Chapter>,
+    pub in_library: bool,
 }
 
 impl Book {
-    pub fn new(source: String, url: String, name: String, image: Option<String>) -> Book {
+    pub fn new(
+        source: String,
+        url: String,
+        name: String,
+        image: Option<String>,
+        in_library: bool,
+    ) -> Book {
         Book {
             source,
             url,
             image,
             name,
             chapters: vec![],
+            in_library,
         }
     }
 

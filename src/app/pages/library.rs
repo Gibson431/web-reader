@@ -12,8 +12,29 @@ use cosmic::widget::*;
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
 
 impl App {
-    pub fn view_library(&self, _size: Size) -> Element<Message> {
+    pub fn view_library(&self, size: Size) -> Element<Message> {
         let spacing = theme::active().cosmic().spacing;
+        let item_width = 180;
+        let item_height = 400;
+        let (width, _height) = (
+            (size.width.floor() as usize)
+                .checked_sub(spacing.space_s as usize)
+                .unwrap_or(0)
+                .max(item_width),
+            (size.height.floor() as usize).max(item_height),
+        );
+
+        let (cols, column_spacing) = {
+            let width_m1 = width.checked_sub(item_width).unwrap_or(0);
+            let cols_m1 = width_m1 / (item_width + spacing.space_xxs as usize);
+            let cols = cols_m1 + 1;
+            let spacing = width_m1
+                .checked_div(cols_m1)
+                .unwrap_or(0)
+                .checked_sub(item_width)
+                .unwrap_or(0);
+            (cols, spacing as u16)
+        };
 
         let search_bar = cosmic::widget::row()
             .align_items(Alignment::Center)
@@ -26,13 +47,87 @@ impl App {
             )
             .apply(container);
 
-        let content = cosmic::widget::container("No results")
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(spacing.space_xxs)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .style(cosmic::theme::Container::default());
+        let mut books = vec![];
+        if let Ok(conn) = rusqlite::Connection::open(STORAGE_FILE) {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT source, url, name, image, in_library FROM books WHERE in_library = 1",
+                )
+                .unwrap();
+
+            let book_iter = stmt
+                .query_map([], |row| {
+                    Ok(Book::new(
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .unwrap();
+
+            for book in book_iter {
+                match book {
+                    Ok(mut book) => {
+                        if book.image == Some("".into()) {
+                            book.image = None;
+                        }
+                        books.push(book);
+                    }
+                    Err(e) => {
+                        dbg!(e);
+                    }
+                }
+            }
+        } else {
+            dbg!("asdsf");
+        };
+
+        let content;
+        if books.is_empty() {
+            content = cosmic::widget::container("No results")
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(spacing.space_xxs)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(cosmic::theme::Container::default());
+        } else {
+            let mut grid = cosmic::widget::grid()
+                .width(Length::Fill)
+                .column_spacing(column_spacing)
+                .row_spacing(spacing.space_xs)
+                .insert_row();
+
+            let card_size = Size::new(item_width as f32, item_height as f32);
+            let mut col = 0;
+            for (_i, book) in books.clone().into_iter().enumerate() {
+                grid = grid.push(self.create_book_card(&book, card_size));
+                col += 1;
+                if col >= cols {
+                    col = 0;
+                    grid = grid.insert_row();
+                }
+            }
+
+            let grid = grid
+                .apply(container)
+                .center_x()
+                .height(Length::Fill)
+                .width(Length::Fill)
+                .padding(Padding {
+                    top: 0.0,
+                    bottom: 0.0,
+                    left: spacing.space_xs as f32,
+                    right: spacing.space_m as f32,
+                })
+                .apply(scrollable)
+                .height(Length::Fill)
+                .width(Length::Fill);
+
+            content = container::Container::new(grid);
+        }
 
         column()
             .push(search_bar)

@@ -2,19 +2,24 @@ pub mod pages;
 pub mod utils;
 
 use std::collections::HashMap;
+use std::fmt::format;
 use std::path::Display;
 
 use crate::core::book::Book;
 use crate::core::source::{self, *};
 use crate::fl;
+use cosmic::app::command::message::cosmic;
 use cosmic::app::{message, Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
+use cosmic::iced::mouse::Interaction;
 use cosmic::iced::window::Icon;
 use cosmic::iced::{Alignment, Length};
-use cosmic::widget::{self, icon, menu, nav_bar};
+use cosmic::widget::{self, *};
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
+use rusqlite::Connection;
 
 const REPOSITORY: &str = "https://github.com/Gibson431/web-reader";
+const STORAGE_FILE: &str = "data.db";
 
 /// This is the struct that represents your application.
 /// It is used to define the data that will be used by your application.
@@ -47,6 +52,8 @@ pub struct App {
 /// If your application does not need to send messages, you can use an empty enum or `()`.
 #[derive(Debug, Clone)]
 pub enum Message {
+    Log(LogMessage),
+    InitializeStorage,
     LaunchUrl(String),
     ToggleContextPage(ContextPage),
 
@@ -54,6 +61,8 @@ pub enum Message {
     ExploreInputChanged(String),
     ExploreResult(Vec<String>),
 
+    LibraryLoad,
+    LibraryToggle(Book),
     LibrarySearch(String),
     LibraryInputChanged(String),
     LibraryResult(Vec<String>),
@@ -61,7 +70,6 @@ pub enum Message {
     // AddSearchBook(Book),
     AddBook(String, Book),
     AddThumbnail(String, bytes::Bytes),
-    Log(LogMessage),
     Ignore,
 }
 
@@ -90,9 +98,10 @@ pub enum ContextPage {
 impl ContextPage {
     fn title(&self) -> String {
         match self {
-            Self::About => fl!("about"),
-            Self::Settings => fl!("settings"),
-            Self::BookContext(book) => book.name.clone(),
+            Self::About => fl!("about-context-title"),
+            Self::Settings => fl!("settings-context-title"),
+            Self::BookContext(_) => fl!("book-context-title"),
+            // Self::BookContext(book) => book.name.clone(),
         }
     }
 }
@@ -178,7 +187,13 @@ impl cosmic::Application for App {
             ..Default::default()
         };
 
-        let command = app.update_titles();
+        let command = Command::batch([
+            app.update_titles(),
+            Command::perform(
+                async move { message::app(Message::InitializeStorage) },
+                |x| x,
+            ),
+        ]);
 
         (app, command)
     }
@@ -226,8 +241,36 @@ impl cosmic::Application for App {
     /// background thread managed by the application's executor.
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
+            Message::InitializeStorage => {
+                match rusqlite::Connection::open(STORAGE_FILE) {
+                    Ok(conn) => {
+                        let mut errors = vec![];
+
+                        if let Err(e) = conn.execute(
+                            "CREATE TABLE if not exists books (
+                            id INTEGER PRIMARY KEY,
+                            source TEXT,
+                            name TEXT, 
+                            url TEXT, 
+                            image TEXT, 
+                            in_library BIT);",
+                            (),
+                        ) {
+                            errors.push(self.log_error(e.to_string()));
+                        };
+
+                        if !errors.is_empty() {
+                            return Command::batch(errors);
+                        }
+                    }
+                    Err(e) => return self.log_error(e.to_string()),
+                };
+            }
             Message::Log(log) => {
-                dbg!(log);
+                match log {
+                    LogMessage::Log(msg) => dbg!(&msg),
+                    LogMessage::Error(msg) => dbg!(&msg),
+                };
             }
             Message::LaunchUrl(url) => {
                 let _result = open::that_detached(url);
@@ -282,11 +325,29 @@ impl cosmic::Application for App {
                         continue;
                     }
 
+                    // Create command to add book from storage
+                    match self.get_book_from_storage(url.clone()) {
+                        Ok(book) => {
+                            if let Some(book) = book {
+                                let temp_url = url.clone();
+                                commands.push(Command::perform(
+                                    async move { message::app(Message::AddBook(temp_url, book)) },
+                                    |x| x,
+                                ));
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            dbg!(e);
+                        }
+                    }
+
                     // Create command to scrape book info
                     commands.push(Command::perform(
                         async move {
                             let source = RoyalRoadSource::new();
                             let book = source.scrape_book(url.clone()).await.unwrap();
+
                             message::app(Message::AddBook(url, book))
                         },
                         |x| x,
@@ -299,6 +360,24 @@ impl cosmic::Application for App {
 
             Message::AddBook(url, book) => {
                 _ = self.books.insert(url.clone(), book.clone());
+                if let Ok(res) = self.get_book_from_storage(url) {
+                    if res.is_none() {
+                        if let Some(conn) = rusqlite::Connection::open(STORAGE_FILE).ok() {
+                            if let Err(e) = conn.execute(
+                                "INSERT INTO books (source, name, url, image, in_library) values (?1, ?2, ?3 ,?4, ?5)",
+                                [
+                                    book.source.clone(),
+                                    book.name.clone(),
+                                    book.url.clone(),
+                                    book.image.clone().unwrap_or("".into()),
+                                    if book.in_library {"1".into()} else {"0".into()},
+                                ],
+                            ) {
+                                return self.log_error(e.to_string());
+                            }
+                        }
+                    }
+                };
 
                 let image_url = match book.image {
                     Some(url) => url,
@@ -313,8 +392,7 @@ impl cosmic::Application for App {
                                     message::app(Message::AddThumbnail(book.name.clone(), content))
                                 }
                                 Err(e) => {
-                                    dbg!(e);
-                                    message::none()
+                                    message::app(Message::Log(LogMessage::Error(e.to_string())))
                                 }
                             }
                         },
@@ -325,6 +403,30 @@ impl cosmic::Application for App {
             Message::AddThumbnail(name, content) => {
                 self.book_covers.insert(name, content);
             }
+            Message::LibraryToggle(mut book) => {
+                book.in_library = !book.in_library;
+                self.books.insert(book.url.clone(), book.clone());
+                match rusqlite::Connection::open(STORAGE_FILE) {
+                    Ok(conn) => {
+                        if let Err(e) = conn.execute(
+                            "UPDATE books SET in_library = ?1 WHERE url = ?2;",
+                            [
+                                if book.in_library {
+                                    "1".into()
+                                } else {
+                                    "0".into()
+                                },
+                                book.url.clone(),
+                            ],
+                        ) {
+                            return self.log_error(e.to_string());
+                        }
+                    }
+
+                    Err(e) => return self.log_error(e.to_string()),
+                }
+            }
+            Message::LibraryLoad => todo!(),
             Message::Ignore => (),
         }
         Command::none()
@@ -339,7 +441,7 @@ impl cosmic::Application for App {
         Some(match &self.context_page {
             ContextPage::About => self.about_context(),
             ContextPage::Settings => self.settings_context(),
-            ContextPage::BookContext(book) => self.book_context(&book),
+            ContextPage::BookContext(book) => self.book_context(book.clone()),
         })
     }
 
@@ -403,7 +505,6 @@ impl App {
         let display_options = widget::column()
             .push(widget::row().push(widget::text("Display")))
             .align_items(Alignment::Center);
-        // let title = widget::text::title3(fl!("app-title"));
         let contact_info = widget::column()
             .push(
                 widget::button::link(REPOSITORY)
@@ -425,29 +526,100 @@ impl App {
     }
 
     // the book context page
-    pub fn book_context(&self, book: &Book) -> Element<Message> {
-        let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
+    pub fn book_context(&self, mut book: Book) -> Element<Message> {
+        let spacing = theme::active().cosmic().spacing;
 
-        let icon = widget::svg(widget::svg::Handle::from_memory(
-            &include_bytes!("../res/icons/hicolor/24x24/apps/book-svgrepo-com.svg")[..],
-        ))
-        .height(48);
+        match self.get_book_from_storage(book.url.clone()) {
+            Ok(b) => {
+                if let Some(b) = b {
+                    book = b;
+                }
+            }
+            Err(e) => {
+                dbg!(e);
+            }
+        }
 
-        let title = widget::text::title3(fl!("app-title"));
+        if let Some(b) = self.books.get(&book.url) {
+            book = b.clone();
+        };
 
-        let title_row = widget::row().push(icon).push(title).spacing(space_xxs);
+        let image = widget::image(self.get_image_handle(&book))
+            .content_fit(cosmic::iced::ContentFit::Contain)
+            .border_radius([spacing.space_s as f32; 4])
+            .apply(container)
+            .max_height(200)
+            .max_width(200);
 
-        let link = widget::button::link(REPOSITORY)
-            .on_press(Message::LaunchUrl(REPOSITORY.to_string()))
+        let title_row = widget::row()
+            .push(image)
+            .push(widget::column().push(widget::text(book.name.clone())))
+            .spacing(spacing.space_xxs)
+            .align_items(Alignment::Center)
+            .width(Length::Shrink)
+            .apply(container)
+            .align_x(Horizontal::Left)
+            .width(Length::Fill);
+
+        let interaction_row = widget::row()
+            .push(
+                widget::button::button(if book.in_library {
+                    "In Library"
+                } else {
+                    "Not Library"
+                })
+                .on_press(Message::LibraryToggle(book.clone()))
+                .padding(spacing.space_xxs),
+            )
+            .push(
+                widget::button::button(widget::text(fl!("site")))
+                    .on_press(Message::LaunchUrl(book.url.clone()))
+                    .padding(spacing.space_xxs),
+            )
+            .width(Length::Fill)
+            .align_items(Alignment::Center)
+            .apply(container)
+            .width(Length::Fill)
+            .align_x(Horizontal::Center);
+
+        let link = widget::button::link(book.url.clone())
+            .on_press(Message::LaunchUrl(book.url.clone()))
             .padding(0);
+
+        let mut chapters: Vec<Element<Message>> = vec![];
+        for i in 0..15 {
+            chapters.push(widget::text(format!("Chapter {}", i + 1)).into());
+        }
+
+        let chapter_view = widget::column()
+            .push(widget::text("Chapters"))
+            .push(widget::divider::horizontal::default())
+            .push(
+                widget::container(
+                    widget::column::with_children(chapters)
+                        .width(Length::Fill)
+                        .apply(scrollable),
+                )
+                .height(Length::Fixed(200 as f32))
+                .width(Length::Fill),
+            )
+            .align_items(Alignment::Start)
+            .spacing(spacing.space_xxs)
+            .apply(container)
+            .style(cosmic::theme::Container::Card)
+            .padding(spacing.space_xs);
 
         widget::column()
             // .push(icon)
             // .push(title)
             .push(title_row)
+            .push(widget::divider::horizontal::default())
+            .push(interaction_row)
+            .push(widget::divider::horizontal::default())
+            .push(chapter_view)
             .push(link)
             .align_items(Alignment::Center)
-            .spacing(space_xxs)
+            .spacing(spacing.space_xs)
             .into()
     }
 
@@ -463,8 +635,10 @@ impl App {
         }
 
         self.set_header_title(header_title);
+
         // winit
         self.set_window_title(window_title)
+
         // wayland
         // self.set_window_title(window_title, cosmic::iced::window::Id::MAIN)
     }
