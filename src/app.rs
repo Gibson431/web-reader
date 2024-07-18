@@ -16,7 +16,6 @@ use cosmic::iced::window::Icon;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, *};
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
-use rusqlite::Connection;
 
 const REPOSITORY: &str = "https://github.com/Gibson431/web-reader";
 const STORAGE_FILE: &str = "data.db";
@@ -33,10 +32,11 @@ pub struct App {
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// A model that contains all of the pages assigned to the nav bar panel.
     nav: nav_bar::Model,
+    storage_path: std::path::PathBuf,
 
     // Data
-    books: HashMap<String, Book>,               // url, book
-    book_covers: HashMap<String, bytes::Bytes>, // book name, bytes
+    books: HashMap<String, Book>,               // book url, book
+    book_covers: HashMap<String, bytes::Bytes>, // book url, bytes
 
     // Explore page
     explore_input: String,
@@ -242,7 +242,16 @@ impl cosmic::Application for App {
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
             Message::InitializeStorage => {
-                match rusqlite::Connection::open(STORAGE_FILE) {
+                self.storage_path = dirs::data_local_dir().unwrap().join(App::APP_ID);
+                if !self.storage_path.exists() {
+                    if let Err(e) = std::fs::create_dir(&self.storage_path) {
+                        dbg!(e);
+                    } else {
+                        dbg!("created dir: ", &self.storage_path);
+                    };
+                }
+
+                match rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE)) {
                     Ok(conn) => {
                         let mut errors = vec![];
 
@@ -256,14 +265,24 @@ impl cosmic::Application for App {
                             in_library BIT);",
                             (),
                         ) {
-                            errors.push(self.log_error(e.to_string()));
+                            errors.push(self.log_error(format!("{:?}", e)));
+                        };
+
+                        if let Err(e) = conn.execute(
+                            "CREATE TABLE if not exists thumbnails (
+                            id INTEGER PRIMARY KEY,
+                            url TEXT, 
+                            image BLOB);",
+                            (),
+                        ) {
+                            errors.push(self.log_error(format!("{:?}", e)));
                         };
 
                         if !errors.is_empty() {
                             return Command::batch(errors);
                         }
                     }
-                    Err(e) => return self.log_error(e.to_string()),
+                    Err(e) => return self.log_error(format!("{:?}", e)),
                 };
             }
             Message::Log(log) => {
@@ -362,7 +381,9 @@ impl cosmic::Application for App {
                 _ = self.books.insert(url.clone(), book.clone());
                 if let Ok(res) = self.get_book_from_storage(url) {
                     if res.is_none() {
-                        if let Some(conn) = rusqlite::Connection::open(STORAGE_FILE).ok() {
+                        if let Some(conn) =
+                            rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE)).ok()
+                        {
                             if let Err(e) = conn.execute(
                                 "INSERT INTO books (source, name, url, image, in_library) values (?1, ?2, ?3 ,?4, ?5)",
                                 [
@@ -373,7 +394,7 @@ impl cosmic::Application for App {
                                     if book.in_library {"1".into()} else {"0".into()},
                                 ],
                             ) {
-                                return self.log_error(e.to_string());
+                                return self.log_error(format!("{:?}", e));
                             }
                         }
                     }
@@ -384,12 +405,12 @@ impl cosmic::Application for App {
                     None => return Command::none(),
                 };
 
-                if !self.book_covers.contains_key(&book.name) {
+                if !self.book_covers.contains_key(&book.url) {
                     return Command::perform(
                         async move {
                             match App::download_book_cover(image_url).await {
                                 Ok(content) => {
-                                    message::app(Message::AddThumbnail(book.name.clone(), content))
+                                    message::app(Message::AddThumbnail(book.url.clone(), content))
                                 }
                                 Err(e) => {
                                     message::app(Message::Log(LogMessage::Error(e.to_string())))
@@ -400,13 +421,13 @@ impl cosmic::Application for App {
                     );
                 }
             }
-            Message::AddThumbnail(name, content) => {
-                self.book_covers.insert(name, content);
+            Message::AddThumbnail(url, content) => {
+                self.book_covers.insert(url, content);
             }
             Message::LibraryToggle(mut book) => {
                 book.in_library = !book.in_library;
                 self.books.insert(book.url.clone(), book.clone());
-                match rusqlite::Connection::open(STORAGE_FILE) {
+                match rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE)) {
                     Ok(conn) => {
                         if let Err(e) = conn.execute(
                             "UPDATE books SET in_library = ?1 WHERE url = ?2;",
@@ -419,11 +440,16 @@ impl cosmic::Application for App {
                                 book.url.clone(),
                             ],
                         ) {
-                            return self.log_error(e.to_string());
+                            return self.log_error(format!("{:?}", e));
                         }
                     }
 
-                    Err(e) => return self.log_error(e.to_string()),
+                    Err(e) => return self.log_error(format!("{:?}", e)),
+                }
+                if book.in_library {
+                    if let Err(e) = self.send_thumbnail_to_storage(book) {
+                        return self.log_error(format!("{:?}", e));
+                    }
                 }
             }
             Message::LibraryLoad => todo!(),

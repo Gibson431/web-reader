@@ -10,6 +10,8 @@ use cosmic::iced::window::Icon;
 use cosmic::iced::{Alignment, Length, Padding, Size};
 use cosmic::widget::*;
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 
 impl App {
     pub fn view_library(&self, size: Size) -> Element<Message> {
@@ -43,45 +45,27 @@ impl App {
                 cosmic::widget::search_input("Search for books...", &self.library_input)
                     .width(Length::Fill)
                     .on_input(Message::LibraryInputChanged)
-                    .on_submit_maybe(Some(Message::LibrarySearch(self.library_input.clone()))),
+                    .on_submit_maybe(Some(Message::Ignore)),
+                    // .on_submit_maybe(Some(Message::LibrarySearch(self.library_input.clone()))),
             )
             .apply(container);
 
-        let mut books = vec![];
-        if let Ok(conn) = rusqlite::Connection::open(STORAGE_FILE) {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT source, url, name, image, in_library FROM books WHERE in_library = 1",
-                )
-                .unwrap();
-
-            let book_iter = stmt
-                .query_map([], |row| {
-                    Ok(Book::new(
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                })
-                .unwrap();
-
-            for book in book_iter {
-                match book {
-                    Ok(mut book) => {
-                        if book.image == Some("".into()) {
-                            book.image = None;
-                        }
-                        books.push(book);
-                    }
-                    Err(e) => {
-                        dbg!(e);
-                    }
+        let books = if self.library_input.is_empty() {
+            match self.get_library_books() {
+                Ok(b) => b,
+                Err(e) => {
+                    dbg!(e);
+                    vec![]
                 }
             }
         } else {
-            dbg!("asdsf");
+            match self.get_library_books_like(self.library_input.clone()) {
+                Ok(b) => b,
+                Err(e) => {
+                    dbg!(e);
+                    vec![]
+                }
+            }
         };
 
         let content;
@@ -137,5 +121,61 @@ impl App {
             .height(Length::Fill)
             .width(Length::Fill)
             .into()
+    }
+
+    fn get_library_books(&self) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
+        let conn = rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE))?;
+        let mut stmt = conn
+            .prepare("SELECT source, url, name, image, in_library FROM books WHERE in_library = 1")
+            .unwrap();
+
+        let book_iter = stmt
+            .query_map([], |row| {
+                Ok(Book::new(
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })
+            .unwrap();
+
+        let mut books = vec![];
+        for book in book_iter {
+            match book {
+                Ok(mut book) => {
+                    if book.image == Some("".into()) {
+                        book.image = None;
+                    }
+                    books.push(book);
+                }
+                Err(e) => {
+                    dbg!(e);
+                }
+            }
+        }
+
+        Ok(books)
+    }
+
+    fn get_library_books_like(
+        &self,
+        search_term: String,
+    ) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
+        let books = self.get_library_books()?;
+        let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+        let books = books
+            .iter()
+            .map(|b| (matcher.fuzzy_match(&b.name, &search_term), b));
+        let mut books = books
+            .filter_map(|(score_opt, b)| match score_opt {
+                Some(s) => Some((s, b.clone())),
+                None => None,
+            })
+            .collect::<Vec<(i64, Book)>>();
+        books.sort_by(|a, b| b.0.cmp(&a.0));
+        let books = books.iter().map(|(_, b)| b.clone()).collect::<Vec<Book>>();
+        Ok(books)
     }
 }

@@ -26,25 +26,28 @@ impl App {
             cosmic::iced::widget::image(handle.clone())
                 .content_fit(cosmic::iced::ContentFit::Contain)
                 .width(Length::Fill)
-                .border_radius([spacing.space_xxxs as f32; 4]),
+                .border_radius([spacing.space_xxs as f32; 4])
+                .apply(container)
+                .style(cosmic::theme::Container::Secondary),
         );
 
         card_content = card_content.push(
             cosmic::widget::text(book.name.clone()).height(Length::Fixed(spacing.space_xl as f32)),
         );
-        let button = widget::button::custom_image_button(card_content, None)
+
+        let card = container(card_content)
+            .padding(spacing.space_xxs)
+            .style(cosmic::theme::Container::Secondary);
+
+        let button = widget::button::custom_image_button(card, None)
             .on_press(Message::ToggleContextPage(ContextPage::BookContext(
                 book.clone(),
             )))
-            .style(cosmic::theme::Button::Image);
-
-        let card = container(button)
-            .padding(spacing.space_xxs)
+            .style(cosmic::theme::Button::Image)
             .width(Length::Fixed(size.width))
-            .height(Length::Shrink)
-            .style(cosmic::theme::Container::Secondary);
-        // let mouse_area =
-        card.into()
+            .height(Length::Shrink);
+
+        button.into()
     }
 
     pub async fn download_book_cover(
@@ -58,9 +61,15 @@ impl App {
     }
 
     pub fn get_image_handle(&self, book: &Book) -> cosmic::widget::image::Handle {
-        match self.book_covers.get(&book.name) {
-            Some(h) => cosmic::widget::image::Handle::from_memory(h.clone()),
-            None => cosmic::widget::image::Handle::from_path("res/covers/rr-image.png"),
+        if let Some(h) = self.book_covers.get(&book.url) {
+            cosmic::widget::image::Handle::from_memory(h.clone())
+        } else {
+            if let Ok(opt) = self.get_thumbnail_from_storage(book.clone()) {
+                if let Some(bytes) = opt {
+                    return cosmic::widget::image::Handle::from_memory(bytes);
+                };
+            }
+            cosmic::widget::image::Handle::from_path("res/covers/rr-image.png")
         }
     }
 
@@ -75,7 +84,7 @@ impl App {
         &self,
         url: String,
     ) -> Result<Option<Book>, Box<dyn std::error::Error>> {
-        let conn = rusqlite::Connection::open(STORAGE_FILE)?;
+        let conn = rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE))?;
         let mut stmt = conn
             .prepare("SELECT source, url, name, image, in_library FROM books WHERE url = :url;")?;
 
@@ -98,5 +107,42 @@ impl App {
         }
 
         Ok(None)
+    }
+
+    pub fn get_thumbnail_from_storage(
+        &self,
+        book: Book,
+    ) -> Result<Option<bytes::Bytes>, Box<dyn std::error::Error>> {
+        let conn = rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE))?;
+        let mut stmt = conn.prepare("SELECT image FROM thumbnails WHERE url = :url;")?;
+
+        let image_iter = stmt.query_map(&[(":url", &book.url)], |row| {
+            Ok(row.get::<usize, Vec<u8>>(0)?)
+        })?;
+
+        for img in image_iter {
+            let bytes = bytes::Bytes::from(img?);
+            return Ok(Some(bytes));
+        }
+
+        Ok(None)
+    }
+
+    pub fn send_thumbnail_to_storage(&self, book: Book) -> Result<(), Box<dyn std::error::Error>> {
+        let bytes = match self.book_covers.get(&book.url) {
+            Some(b) => b,
+            None => {
+                dbg!(&book);
+                return Err("No book cover".into()).into();
+            }
+        };
+
+        let conn = rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE))?;
+        let _ = conn.execute(
+            "INSERT INTO thumbnails (url, image) values (?1, ?2)",
+            (&book.url.clone(), &bytes.to_vec()),
+        )?;
+
+        Ok(())
     }
 }
