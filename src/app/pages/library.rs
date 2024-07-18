@@ -46,7 +46,7 @@ impl App {
                     .width(Length::Fill)
                     .on_input(Message::LibraryInputChanged)
                     .on_submit_maybe(Some(Message::Ignore)),
-                    // .on_submit_maybe(Some(Message::LibrarySearch(self.library_input.clone()))),
+                // .on_submit_maybe(Some(Message::LibrarySearch(self.library_input.clone()))),
             )
             .apply(container);
 
@@ -165,10 +165,9 @@ impl App {
     ) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
         let books = self.get_library_books()?;
         let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
-        let books = books
-            .iter()
-            .map(|b| (matcher.fuzzy_match(&b.name, &search_term), b));
         let mut books = books
+            .iter()
+            .map(|b| (matcher.fuzzy_match(&b.name, &search_term), b))
             .filter_map(|(score_opt, b)| match score_opt {
                 Some(s) => Some((s, b.clone())),
                 None => None,
