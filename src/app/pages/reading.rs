@@ -13,7 +13,7 @@ use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
 
 impl App {
     pub fn view_reading(&self, size: Size) -> Element<Message> {
-        todo!("history tab view")
+        todo!("reading tab view")
         // let spacing = theme::active().cosmic().spacing;
         // let item_width = 180;
         // let item_height = 400;

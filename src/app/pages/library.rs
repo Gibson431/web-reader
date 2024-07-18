@@ -1,16 +1,10 @@
-use std::collections::HashMap;
-use std::path::Display;
-
 use crate::app::*;
 use crate::core::book::Book;
-use crate::fl;
-use cosmic::app::{Command, Core};
+
 use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::window::Icon;
 use cosmic::iced::{Alignment, Length, Padding, Size};
 use cosmic::widget::*;
-use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
-use fuzzy_matcher::skim::SkimMatcherV2;
+use cosmic::{theme, Apply, Element};
 use fuzzy_matcher::FuzzyMatcher;
 use itertools::Itertools;
 
@@ -124,6 +118,7 @@ impl App {
             .into()
     }
 
+    /// Fuzzy searches library for books like search_term
     fn get_library_books_like(
         &self,
         search_term: String,

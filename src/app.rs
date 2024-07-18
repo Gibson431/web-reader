@@ -2,24 +2,18 @@ pub mod pages;
 pub mod utils;
 
 use std::collections::HashMap;
-use std::fmt::format;
-use std::path::Display;
 
 use crate::core;
 use crate::core::book::Book;
 use crate::core::source::{self, *};
 use crate::fl;
-use cosmic::app::command::message::cosmic;
 use cosmic::app::{message, Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
-use cosmic::iced::mouse::Interaction;
-use cosmic::iced::window::Icon;
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, *};
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
 
 const REPOSITORY: &str = "https://github.com/Gibson431/web-reader";
-const STORAGE_FILE: &str = "data.db";
 
 /// This is the struct that represents your application.
 /// It is used to define the data that will be used by your application.
@@ -34,10 +28,6 @@ pub struct App {
     /// A model that contains all of the pages assigned to the nav bar panel.
     nav: nav_bar::Model,
     data_manager: core::data::DataManager,
-
-    // Data
-    books: HashMap<String, Book>,               // book url, book
-    book_covers: HashMap<String, bytes::Bytes>, // book url, bytes
 
     // Explore page
     explore_input: String,
@@ -99,6 +89,7 @@ pub enum Page {
     Explore,
     Library,
     History,
+    Chapter(core::chapter::Chapter),
 }
 
 /// Identifies a context page to display in the context drawer.
@@ -457,8 +448,6 @@ impl App {
             .padding(0);
 
         widget::column()
-            // .push(icon)
-            // .push(title)
             .push(title_row)
             .push(link)
             .align_items(Alignment::Center)
@@ -498,7 +487,7 @@ impl App {
             .into()
     }
 
-    // the book context page
+    // The book context page
     pub fn book_context(&self, mut book: Book) -> Element<Message> {
         let spacing = theme::active().cosmic().spacing;
 
