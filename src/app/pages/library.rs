@@ -12,6 +12,7 @@ use cosmic::widget::*;
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use itertools::Itertools;
 
 impl App {
     pub fn view_library(&self, size: Size) -> Element<Message> {
@@ -165,16 +166,16 @@ impl App {
     ) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
         let books = self.get_library_books()?;
         let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
-        let mut books = books
+        let books = books
             .iter()
             .map(|b| (matcher.fuzzy_match(&b.name, &search_term), b))
             .filter_map(|(score_opt, b)| match score_opt {
                 Some(s) => Some((s, b.clone())),
                 None => None,
             })
-            .collect::<Vec<(i64, Book)>>();
-        books.sort_by(|a, b| b.0.cmp(&a.0));
-        let books = books.iter().map(|(_, b)| b.clone()).collect::<Vec<Book>>();
+            .sorted_by(|a, b| b.0.cmp(&a.0))
+            .map(|(_, b)| b.clone())
+            .collect::<Vec<Book>>();
         Ok(books)
     }
 }
