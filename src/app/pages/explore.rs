@@ -66,9 +66,9 @@ impl App {
             let card_size = Size::new(item_width as f32, item_height as f32);
             let mut col = 0;
             for (_i, url) in self.explore_results.clone().into_iter().enumerate() {
-                let book = match self.books.get(&url) {
-                    Some(b) => b.clone(),
-                    None => continue,
+                let book = match self.data_manager.get_book(&url) {
+                    Ok(Some(b)) => b.clone(),
+                    _ => continue,
                 };
                 grid = grid.push(self.create_book_card(&book, card_size));
                 col += 1;

@@ -52,7 +52,7 @@ impl App {
             .apply(container);
 
         let books = if self.library_input.is_empty() {
-            match self.get_library_books() {
+            match self.data_manager.get_library_books() {
                 Ok(b) => b,
                 Err(e) => {
                     dbg!(e);
@@ -124,47 +124,11 @@ impl App {
             .into()
     }
 
-    fn get_library_books(&self) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
-        let conn = rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE))?;
-        let mut stmt = conn
-            .prepare("SELECT source, url, name, image, in_library FROM books WHERE in_library = 1")
-            .unwrap();
-
-        let book_iter = stmt
-            .query_map([], |row| {
-                Ok(Book::new(
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                ))
-            })
-            .unwrap();
-
-        let mut books = vec![];
-        for book in book_iter {
-            match book {
-                Ok(mut book) => {
-                    if book.image == Some("".into()) {
-                        book.image = None;
-                    }
-                    books.push(book);
-                }
-                Err(e) => {
-                    dbg!(e);
-                }
-            }
-        }
-
-        Ok(books)
-    }
-
     fn get_library_books_like(
         &self,
         search_term: String,
     ) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
-        let books = self.get_library_books()?;
+        let books = self.data_manager.get_library_books()?;
         let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
         let books = books
             .iter()

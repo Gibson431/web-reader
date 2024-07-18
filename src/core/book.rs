@@ -8,7 +8,6 @@ pub struct Book {
     pub url: String,
     pub image: Option<String>,
     pub name: String,
-    pub chapters: Vec<Chapter>,
     pub in_library: bool,
 }
 
@@ -25,7 +24,6 @@ impl Book {
             url,
             image,
             name,
-            chapters: vec![],
             in_library,
         }
     }

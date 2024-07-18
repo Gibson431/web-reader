@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fmt::format;
 use std::path::Display;
 
+use crate::core;
 use crate::core::book::Book;
 use crate::core::source::{self, *};
 use crate::fl;
@@ -32,7 +33,7 @@ pub struct App {
     key_binds: HashMap<menu::KeyBind, MenuAction>,
     /// A model that contains all of the pages assigned to the nav bar panel.
     nav: nav_bar::Model,
-    storage_path: std::path::PathBuf,
+    data_manager: core::data::DataManager,
 
     // Data
     books: HashMap<String, Book>,               // book url, book
@@ -52,24 +53,38 @@ pub struct App {
 /// If your application does not need to send messages, you can use an empty enum or `()`.
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// Logs a message
     Log(LogMessage),
+    /// Initialises the db and cache
     InitializeStorage,
+    /// Launches a website in default browser
     LaunchUrl(String),
+    /// Toggles the context page
     ToggleContextPage(ContextPage),
 
+    /// Triggers the search from all activated sources
     ExploreSearch(String),
+    /// Callback for changing the explore text input field
     ExploreInputChanged(String),
+    /// Result for scraping all activated sources for the search term
     ExploreResult(Vec<String>),
 
     LibraryLoad,
+    /// Toggles to in_library flag for cache and db for book
     LibraryToggle(Book),
+    /// Searches the library db (unused)
     LibrarySearch(String),
+    /// Callback for changing the library text input field
+    /// Is used for the library view's fuzzy search
     LibraryInputChanged(String),
     LibraryResult(Vec<String>),
 
-    // AddSearchBook(Book),
-    AddBook(String, Book),
-    AddThumbnail(String, bytes::Bytes),
+    /// Adds book to cache, db, and triggers thumbnail scrape
+    AddBook(Book),
+    /// Result of thumbnail scrape, adds iamge to image cache
+    AddThumbnail(Book, bytes::Bytes),
+
+    /// Null op
     Ignore,
 }
 
@@ -184,6 +199,7 @@ impl cosmic::Application for App {
             context_page: ContextPage::default(),
             key_binds: HashMap::new(),
             nav,
+            data_manager: core::data::DataManager::new(),
             ..Default::default()
         };
 
@@ -242,48 +258,21 @@ impl cosmic::Application for App {
     fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
         match message {
             Message::InitializeStorage => {
-                self.storage_path = dirs::data_local_dir().unwrap().join(App::APP_ID);
-                if !self.storage_path.exists() {
-                    if let Err(e) = std::fs::create_dir(&self.storage_path) {
-                        dbg!(e);
-                    } else {
-                        dbg!("created dir: ", &self.storage_path);
+                let storage_path = dirs::data_local_dir().unwrap().join(App::APP_ID);
+                if !storage_path.exists() {
+                    if let Err(e) = std::fs::create_dir(&storage_path) {
+                        return self.log_error(format!("{:?}", e));
                     };
                 }
 
-                match rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE)) {
-                    Ok(conn) => {
-                        let mut errors = vec![];
-
-                        if let Err(e) = conn.execute(
-                            "CREATE TABLE if not exists books (
-                            id INTEGER PRIMARY KEY,
-                            source TEXT,
-                            name TEXT, 
-                            url TEXT, 
-                            image TEXT, 
-                            in_library BIT);",
-                            (),
-                        ) {
-                            errors.push(self.log_error(format!("{:?}", e)));
-                        };
-
-                        if let Err(e) = conn.execute(
-                            "CREATE TABLE if not exists thumbnails (
-                            id INTEGER PRIMARY KEY,
-                            url TEXT, 
-                            image BLOB);",
-                            (),
-                        ) {
-                            errors.push(self.log_error(format!("{:?}", e)));
-                        };
-
-                        if !errors.is_empty() {
-                            return Command::batch(errors);
-                        }
-                    }
-                    Err(e) => return self.log_error(format!("{:?}", e)),
-                };
+                let errors = self.data_manager.init(storage_path);
+                if !errors.is_empty() {
+                    let commands: Vec<cosmic::Command<message::Message<Message>>> = errors
+                        .iter()
+                        .map(|e| self.log_error(format!("{:?}", e)))
+                        .collect();
+                    return Command::batch(commands);
+                }
             }
             Message::Log(log) => {
                 match log {
@@ -339,116 +328,75 @@ impl cosmic::Application for App {
                 self.explore_results = res;
                 let mut commands = vec![];
                 for url in self.explore_results.clone() {
-                    // Skip already available books
-                    if let Some(_) = self.books.get(&url) {
-                        continue;
-                    }
-
-                    // Create command to add book from storage
-                    match self.get_book_from_storage(url.clone()) {
-                        Ok(book) => {
-                            if let Some(book) = book {
-                                let temp_url = url.clone();
-                                commands.push(Command::perform(
-                                    async move { message::app(Message::AddBook(temp_url, book)) },
-                                    |x| x,
-                                ));
-                                continue;
-                            }
-                        }
-                        Err(e) => {
-                            dbg!(e);
-                        }
-                    }
-
-                    // Create command to scrape book info
-                    commands.push(Command::perform(
-                        async move {
-                            let source = RoyalRoadSource::new();
-                            let book = source.scrape_book(url.clone()).await.unwrap();
-
-                            message::app(Message::AddBook(url, book))
-                        },
-                        |x| x,
-                    ))
+                    match self.data_manager.get_book(&url) {
+                        // Skip book
+                        Ok(Some(_)) => continue,
+                        // Create command to scrape book info
+                        Ok(_) => commands.push(Command::perform(
+                            async move {
+                                let source = RoyalRoadSource::new();
+                                let book = source.scrape_book(url.clone()).await;
+                                match book {
+                                    Ok(b) => message::app(Message::AddBook(b)),
+                                    Err(e) => message::app(Message::Log(LogMessage::Error(
+                                        format!("{:?}", e),
+                                    ))),
+                                }
+                            },
+                            |x| x,
+                        )),
+                        // Log error
+                        Err(e) => commands.push(self.log_error(format!("{:?}", e))),
+                    };
                 }
                 return Command::batch(commands);
             }
             Message::LibrarySearch(_) => todo!("library search"),
             Message::LibraryResult(_) => todo!("library result"),
 
-            Message::AddBook(url, book) => {
-                _ = self.books.insert(url.clone(), book.clone());
-                if let Ok(res) = self.get_book_from_storage(url) {
-                    if res.is_none() {
-                        if let Some(conn) =
-                            rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE)).ok()
-                        {
-                            if let Err(e) = conn.execute(
-                                "INSERT INTO books (source, name, url, image, in_library) values (?1, ?2, ?3 ,?4, ?5)",
-                                [
-                                    book.source.clone(),
-                                    book.name.clone(),
-                                    book.url.clone(),
-                                    book.image.clone().unwrap_or("".into()),
-                                    if book.in_library {"1".into()} else {"0".into()},
-                                ],
-                            ) {
-                                return self.log_error(format!("{:?}", e));
-                            }
-                        }
-                    }
+            Message::AddBook(book) => {
+                if let Err(e) = self.data_manager.set_book(&book) {
+                    return self.log_error(format!("{:?}", e));
                 };
 
-                let image_url = match book.image {
+                let image_url = match book.image.clone() {
                     Some(url) => url,
                     None => return Command::none(),
                 };
 
-                if !self.book_covers.contains_key(&book.url) {
-                    return Command::perform(
+                return match self.data_manager.get_image_as_bytes(&book) {
+                    Ok(Some(_)) => Command::none(),
+                    _ => Command::perform(
                         async move {
                             match App::download_book_cover(image_url).await {
-                                Ok(content) => {
-                                    message::app(Message::AddThumbnail(book.url.clone(), content))
+                                Ok(bytes) => {
+                                    message::app(Message::AddThumbnail(book.clone(), bytes))
                                 }
-                                Err(e) => {
-                                    message::app(Message::Log(LogMessage::Error(e.to_string())))
-                                }
+                                Err(e) => message::app(Message::Log(LogMessage::Error(format!(
+                                    "{:?}",
+                                    e
+                                )))),
                             }
                         },
                         |x| x,
-                    );
-                }
+                    ),
+                };
             }
-            Message::AddThumbnail(url, content) => {
-                self.book_covers.insert(url, content);
+            Message::AddThumbnail(book, bytes) => {
+                self.data_manager.set_image_as_bytes_to_cache(&book, bytes);
             }
             Message::LibraryToggle(mut book) => {
                 book.in_library = !book.in_library;
-                self.books.insert(book.url.clone(), book.clone());
-                match rusqlite::Connection::open(self.storage_path.join(STORAGE_FILE)) {
-                    Ok(conn) => {
-                        if let Err(e) = conn.execute(
-                            "UPDATE books SET in_library = ?1 WHERE url = ?2;",
-                            [
-                                if book.in_library {
-                                    "1".into()
-                                } else {
-                                    "0".into()
-                                },
-                                book.url.clone(),
-                            ],
-                        ) {
+
+                if let Err(e) = self.data_manager.set_book(&book) {
+                    return self.log_error(format!("{:?}", e));
+                };
+
+                if let Ok(Some(bytes)) = self.data_manager.get_image_as_bytes(&book) {
+                    if book.in_library {
+                        if let Err(e) = self.data_manager.set_image_as_bytes(&book, bytes) {
                             return self.log_error(format!("{:?}", e));
                         }
-                    }
-
-                    Err(e) => return self.log_error(format!("{:?}", e)),
-                }
-                if book.in_library {
-                    if let Err(e) = self.send_thumbnail_to_storage(book) {
-                        return self.log_error(format!("{:?}", e));
                     }
                 }
             }
@@ -544,7 +492,6 @@ impl App {
             .push(widget::divider::horizontal::default())
             .push(display_options)
             .push(widget::divider::horizontal::default())
-            // .push(title)
             .push(contact_info)
             .align_items(Alignment::Center)
             .spacing(space_xxs)
@@ -555,7 +502,7 @@ impl App {
     pub fn book_context(&self, mut book: Book) -> Element<Message> {
         let spacing = theme::active().cosmic().spacing;
 
-        match self.get_book_from_storage(book.url.clone()) {
+        match self.data_manager.get_book_from_storage(book.url.clone()) {
             Ok(b) => {
                 if let Some(b) = b {
                     book = b;
@@ -566,20 +513,25 @@ impl App {
             }
         }
 
-        if let Some(b) = self.books.get(&book.url) {
-            book = b.clone();
-        };
+        // if let Some(b) = self.books.get(&book.url) {
+        //     book = b.clone();
+        // };
 
-        let image = widget::image(self.get_image_handle(&book))
+        let image = widget::image(self.data_manager.get_image_handle(&book))
             .content_fit(cosmic::iced::ContentFit::Contain)
-            .border_radius([spacing.space_s as f32; 4])
+            .border_radius([spacing.space_xxs as f32; 4])
             .apply(container)
             .max_height(200)
             .max_width(200);
 
         let title_row = widget::row()
             .push(image)
-            .push(widget::column().push(widget::text(book.name.clone())))
+            .push(
+                widget::column()
+                    .push(widget::text(book.name.clone()))
+                    .push(widget::text(book.source.clone()).style(cosmic::theme::Text::Default))
+                    .spacing(spacing.space_xxs),
+            )
             .spacing(spacing.space_xxs)
             .align_items(Alignment::Center)
             .width(Length::Shrink)

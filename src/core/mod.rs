@@ -2,6 +2,7 @@
 
 pub mod book;
 pub mod chapter;
+pub mod data;
 pub mod localization;
 pub mod source;
 pub mod widget;
