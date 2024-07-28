@@ -1,15 +1,8 @@
 use async_trait::async_trait;
 
-use crate::core::chapter::Chapter;
+use crate::core::Chapter;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Book {
-    pub source: String,
-    pub url: String,
-    pub image: Option<String>,
-    pub name: String,
-    pub in_library: bool,
-}
+use super::Book;
 
 impl Book {
     pub fn new(

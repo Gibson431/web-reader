@@ -1,19 +1,21 @@
+pub mod context;
 pub mod pages;
 pub mod utils;
 
+use std::any::Any;
 use std::collections::HashMap;
 
-use crate::core;
-use crate::core::book::Book;
 use crate::core::source::{self, *};
+use crate::core::{self, Book, Chapter};
 use crate::fl;
 use cosmic::app::{message, Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{self, *};
 use cosmic::{cosmic_theme, theme, ApplicationExt, Apply, Element};
+use segmented_button::Selectable;
 
-const REPOSITORY: &str = "https://github.com/Gibson431/web-reader";
+pub const REPOSITORY: &str = "https://github.com/Gibson431/web-reader";
 
 /// This is the struct that represents your application.
 /// It is used to define the data that will be used by your application.
@@ -28,6 +30,7 @@ pub struct App {
     /// A model that contains all of the pages assigned to the nav bar panel.
     nav: nav_bar::Model,
     data_manager: core::data::DataManager,
+    pages: HashMap<Page, Box<dyn crate::app::pages::page::Page>>,
 
     // Explore page
     explore_input: String,
@@ -36,6 +39,9 @@ pub struct App {
     // Library page
     library_input: String,
     library_results: Vec<String>,
+
+    // Book page
+    book: Option<Book>,
 }
 
 /// This is the enum that contains all the possible variants that your application will need to transmit messages.
@@ -47,10 +53,17 @@ pub enum Message {
     Log(LogMessage),
     /// Initialises the db and cache
     InitializeStorage,
+    /// Clears the internal cache and hard database
+    ClearStorage,
     /// Launches a website in default browser
     LaunchUrl(String),
     /// Toggles the context page
     ToggleContextPage(ContextPage),
+
+    ReadChapter(Chapter),
+
+    /// Navigate pages
+    // PageMessage(crate::app::pages::Message),
 
     /// Triggers the search from all activated sources
     ExploreSearch(String),
@@ -59,6 +72,7 @@ pub enum Message {
     /// Result for scraping all activated sources for the search term
     ExploreResult(Vec<String>),
 
+    // LibraryMessage(crate::app::pages::library::Message),
     LibraryLoad,
     /// Toggles to in_library flag for cache and db for book
     LibraryToggle(Book),
@@ -67,12 +81,22 @@ pub enum Message {
     /// Callback for changing the library text input field
     /// Is used for the library view's fuzzy search
     LibraryInputChanged(String),
+    /// The result for the library search
     LibraryResult(Vec<String>),
 
     /// Adds book to cache, db, and triggers thumbnail scrape
     AddBook(Book),
     /// Result of thumbnail scrape, adds iamge to image cache
     AddThumbnail(Book, bytes::Bytes),
+    /// Adds chapter to cache and db
+    AddChapter(Chapter),
+
+    /// Rescrapes book from url
+    RefreshBook(String),
+    /// Rescrapes chapter
+    RefreshChapter(Chapter),
+    /// Rescrapes tumbnail from book
+    RefreshThumbnail(Book),
 
     /// Null op
     Ignore,
@@ -89,7 +113,7 @@ pub enum Page {
     Explore,
     Library,
     History,
-    Chapter(core::chapter::Chapter),
+    Chapter(core::Chapter),
 }
 
 /// Identifies a context page to display in the context drawer.
@@ -172,8 +196,8 @@ impl cosmic::Application for App {
         nav.insert()
             .text("Explore")
             .data::<Page>(Page::Explore)
-            .icon(icon::from_name("applications-science-symbolic"))
-            .activate();
+            .icon(icon::from_name("applications-science-symbolic"));
+        // .activate();
 
         nav.insert()
             .text("Library")
@@ -228,6 +252,7 @@ impl cosmic::Application for App {
     ///
     /// To get a better sense of which widgets are available, check out the `widget` module.
     fn view(&self) -> Element<Self::Message> {
+        dbg!(self.nav.active());
         let page_view = widget::responsive(|size| match self.nav.active_data::<Page>() {
             Some(Page::Explore) => self.view_explore(size),
             Some(Page::Library) => self.view_library(size),
@@ -250,11 +275,6 @@ impl cosmic::Application for App {
         match message {
             Message::InitializeStorage => {
                 let storage_path = dirs::data_local_dir().unwrap().join(App::APP_ID);
-                if !storage_path.exists() {
-                    if let Err(e) = std::fs::create_dir(&storage_path) {
-                        return self.log_error(format!("{:?}", e));
-                    };
-                }
 
                 let errors = self.data_manager.init(storage_path);
                 if !errors.is_empty() {
@@ -264,6 +284,12 @@ impl cosmic::Application for App {
                         .collect();
                     return Command::batch(commands);
                 }
+            }
+            Message::ClearStorage => {
+                if let Err(e) = self.data_manager.clear_all() {
+                    return self.log_error(format!("{:?}", e));
+                }
+                dbg!("Cleared storage");
             }
             Message::Log(log) => {
                 match log {
@@ -324,16 +350,7 @@ impl cosmic::Application for App {
                         Ok(Some(_)) => continue,
                         // Create command to scrape book info
                         Ok(_) => commands.push(Command::perform(
-                            async move {
-                                let source = RoyalRoadSource::new();
-                                let book = source.scrape_book(url.clone()).await;
-                                match book {
-                                    Ok(b) => message::app(Message::AddBook(b)),
-                                    Err(e) => message::app(Message::Log(LogMessage::Error(
-                                        format!("{:?}", e),
-                                    ))),
-                                }
-                            },
+                            async move { message::app(Message::RefreshBook(url)) },
                             |x| x,
                         )),
                         // Log error
@@ -350,32 +367,15 @@ impl cosmic::Application for App {
                     return self.log_error(format!("{:?}", e));
                 };
 
-                let image_url = match book.image.clone() {
-                    Some(url) => url,
-                    None => return Command::none(),
-                };
-
-                return match self.data_manager.get_image_as_bytes(&book) {
-                    Ok(Some(_)) => Command::none(),
-                    _ => Command::perform(
-                        async move {
-                            match App::download_book_cover(image_url).await {
-                                Ok(bytes) => {
-                                    message::app(Message::AddThumbnail(book.clone(), bytes))
-                                }
-                                Err(e) => message::app(Message::Log(LogMessage::Error(format!(
-                                    "{:?}",
-                                    e
-                                )))),
-                            }
-                        },
-                        |x| x,
-                    ),
-                };
+                return Command::perform(
+                    async move { message::app(Message::RefreshThumbnail(book)) },
+                    |x| x,
+                );
             }
             Message::AddThumbnail(book, bytes) => {
                 self.data_manager.set_image_as_bytes_to_cache(&book, bytes);
             }
+            Message::AddChapter(chapter) => todo!(),
             Message::LibraryToggle(mut book) => {
                 book.in_library = !book.in_library;
 
@@ -393,6 +393,51 @@ impl cosmic::Application for App {
             }
             Message::LibraryLoad => todo!(),
             Message::Ignore => (),
+            Message::RefreshBook(book_url) => {
+                return Command::perform(
+                    async move {
+                        // message::app(Message::RefreshBook(url))
+                        if book_url.contains(&RoyalRoadSource::new().as_str()) {
+                            let source = RoyalRoadSource::new();
+                            let book = source.scrape_book(book_url.clone()).await;
+                            match book {
+                                Ok(b) => message::app(Message::AddBook(b)),
+                                Err(e) => message::app(Message::Log(LogMessage::Error(format!(
+                                    "{:?}",
+                                    e
+                                )))),
+                            }
+                        } else if false {
+                            message::app(Message::Ignore)
+                        } else {
+                            message::app(Message::Ignore)
+                        }
+                    },
+                    |x| x,
+                );
+            }
+            Message::RefreshChapter(chapter) => todo!(),
+            Message::RefreshThumbnail(book) => {
+                let image_url = match book.image.clone() {
+                    Some(url) => url,
+                    None => return Command::none(),
+                };
+
+                return Command::perform(
+                    async move {
+                        match App::download_book_cover(image_url).await {
+                            Ok(bytes) => message::app(Message::AddThumbnail(book.clone(), bytes)),
+                            Err(e) => {
+                                message::app(Message::Log(LogMessage::Error(format!("{:?}", e))))
+                            }
+                        }
+                    },
+                    |x| x,
+                );
+            }
+            Message::ReadChapter(_) => {
+                self.nav.deactivate();
+            }
         }
         Command::none()
     }
@@ -414,182 +459,13 @@ impl cosmic::Application for App {
     fn on_nav_select(&mut self, id: nav_bar::Id) -> Command<Self::Message> {
         // Activate the page in the model.
         self.nav.activate(id);
+        // self.nav.close();
 
         self.update_titles()
     }
 }
 
 impl App {
-    /// The about page for this app.
-    pub fn about_context(&self) -> Element<Message> {
-        let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
-
-        let icon_style = cosmic::iced::widget::svg::Appearance {
-            color: Some(cosmic::iced::Color::WHITE),
-        };
-        // let icon_style = cosmic::iced_widget::Theme::Light;
-        let icon = widget::svg(widget::svg::Handle::from_memory(
-            &include_bytes!("../res/icons/hicolor/48x48/apps/settings-svgrepo-com.svg")[..],
-        ))
-        .height(48)
-        .width(48);
-
-        let title = widget::text::title3(fl!("app-title"));
-
-        let title_row = widget::row()
-            .push(icon)
-            .push(title)
-            .spacing(space_xxs)
-            .width(Length::Shrink)
-            .align_items(Alignment::Center);
-
-        let link = widget::button::link(REPOSITORY)
-            .on_press(Message::LaunchUrl(REPOSITORY.to_string()))
-            .padding(0);
-
-        widget::column()
-            .push(title_row)
-            .push(link)
-            .align_items(Alignment::Center)
-            .spacing(space_xxs)
-            .width(Length::Fill)
-            .into()
-    }
-
-    /// The settings page for this app.
-    pub fn settings_context(&self) -> Element<Message> {
-        let cosmic_theme::Spacing { space_xxs, .. } = theme::active().cosmic().spacing;
-
-        let icon = widget::svg(widget::svg::Handle::from_memory(
-            &include_bytes!("../res/icons/hicolor/48x48/apps/settings-svgrepo-com.svg")[..],
-        ))
-        .height(64);
-
-        let display_options = widget::column()
-            .push(widget::row().push(widget::text("Display")))
-            .align_items(Alignment::Center);
-        let contact_info = widget::column()
-            .push(
-                widget::button::link(REPOSITORY)
-                    .on_press(Message::LaunchUrl(REPOSITORY.to_string()))
-                    .padding(0),
-            )
-            .align_items(Alignment::Center);
-
-        widget::column()
-            .push(icon)
-            .push(widget::divider::horizontal::default())
-            .push(display_options)
-            .push(widget::divider::horizontal::default())
-            .push(contact_info)
-            .align_items(Alignment::Center)
-            .spacing(space_xxs)
-            .into()
-    }
-
-    // The book context page
-    pub fn book_context(&self, mut book: Book) -> Element<Message> {
-        let spacing = theme::active().cosmic().spacing;
-
-        match self.data_manager.get_book_from_storage(book.url.clone()) {
-            Ok(b) => {
-                if let Some(b) = b {
-                    book = b;
-                }
-            }
-            Err(e) => {
-                dbg!(e);
-            }
-        }
-
-        // if let Some(b) = self.books.get(&book.url) {
-        //     book = b.clone();
-        // };
-
-        let image = widget::image(self.data_manager.get_image_handle(&book))
-            .content_fit(cosmic::iced::ContentFit::Contain)
-            .border_radius([spacing.space_xxs as f32; 4])
-            .apply(container)
-            .max_height(200)
-            .max_width(200);
-
-        let title_row = widget::row()
-            .push(image)
-            .push(
-                widget::column()
-                    .push(widget::text(book.name.clone()))
-                    .push(widget::text(book.source.clone()).style(cosmic::theme::Text::Default))
-                    .spacing(spacing.space_xxs),
-            )
-            .spacing(spacing.space_xxs)
-            .align_items(Alignment::Center)
-            .width(Length::Shrink)
-            .apply(container)
-            .align_x(Horizontal::Left)
-            .width(Length::Fill);
-
-        let interaction_row = widget::row()
-            .push(
-                widget::button::button(if book.in_library {
-                    "In Library"
-                } else {
-                    "Not Library"
-                })
-                .on_press(Message::LibraryToggle(book.clone()))
-                .padding(spacing.space_xxs),
-            )
-            .push(
-                widget::button::button(widget::text(fl!("site")))
-                    .on_press(Message::LaunchUrl(book.url.clone()))
-                    .padding(spacing.space_xxs),
-            )
-            .width(Length::Fill)
-            .align_items(Alignment::Center)
-            .apply(container)
-            .width(Length::Fill)
-            .align_x(Horizontal::Center);
-
-        let link = widget::button::link(book.url.clone())
-            .on_press(Message::LaunchUrl(book.url.clone()))
-            .padding(0);
-
-        let mut chapters: Vec<Element<Message>> = vec![];
-        for i in 0..15 {
-            chapters.push(widget::text(format!("Chapter {}", i + 1)).into());
-        }
-
-        let chapter_view = widget::column()
-            .push(widget::text("Chapters"))
-            .push(widget::divider::horizontal::default())
-            .push(
-                widget::container(
-                    widget::column::with_children(chapters)
-                        .width(Length::Fill)
-                        .apply(scrollable),
-                )
-                .height(Length::Fixed(200 as f32))
-                .width(Length::Fill),
-            )
-            .align_items(Alignment::Start)
-            .spacing(spacing.space_xxs)
-            .apply(container)
-            .style(cosmic::theme::Container::Card)
-            .padding(spacing.space_xs);
-
-        widget::column()
-            // .push(icon)
-            // .push(title)
-            .push(title_row)
-            .push(widget::divider::horizontal::default())
-            .push(interaction_row)
-            .push(widget::divider::horizontal::default())
-            .push(chapter_view)
-            .push(link)
-            .align_items(Alignment::Center)
-            .spacing(spacing.space_xs)
-            .into()
-    }
-
     /// Updates the header and window titles.
     pub fn update_titles(&mut self) -> Command<Message> {
         let mut window_title = fl!("app-title");

@@ -1,4 +1,4 @@
-use crate::core::book::*;
+use crate::core::*;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -15,31 +15,66 @@ impl DataManager {
         DataManager::default()
     }
 
+    pub fn clear_all(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        if self.storage_path.join(Self::STORAGE_FILE).exists() {
+            if let Err(e) = std::fs::remove_file(self.storage_path.join(Self::STORAGE_FILE)) {
+                return Err(e.into());
+            }
+        }
+        let res = self.init(self.storage_path.clone());
+        if !res.is_empty() {
+            return Err("Failed to reinit storage".into());
+        }
+        Ok(())
+    }
+
     pub fn init(&mut self, dir: std::path::PathBuf) -> Vec<Box<dyn std::error::Error>> {
         self.storage_path = dir;
+
+        if !self.storage_path.exists() {
+            if let Err(e) = std::fs::create_dir(&self.storage_path) {
+                return vec![e.into()];
+            };
+        }
+
         let mut errors = vec![];
         match rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE)) {
             Ok(conn) => {
                 let mut errors = vec![];
 
+                // Create books table
                 if let Err(e) = conn.execute(
                     "CREATE TABLE if not exists books (
                     id INTEGER PRIMARY KEY,
                     source TEXT,
                     name TEXT, 
-                    url TEXT, 
-                    image TEXT, 
+                    book_url TEXT, 
+                    image_url TEXT, 
                     in_library BIT);",
                     (),
                 ) {
                     errors.push(e);
                 };
 
+                // Create thumbnails table
                 if let Err(e) = conn.execute(
                     "CREATE TABLE if not exists thumbnails (
                     id INTEGER PRIMARY KEY,
-                    url TEXT, 
-                    image BLOB);",
+                    book_url TEXT, 
+                    image_data BLOB);",
+                    (),
+                ) {
+                    errors.push(e);
+                };
+
+                // Create chapters table
+                if let Err(e) = conn.execute(
+                    "CREATE TABLE if not exists chapters (
+                    id INTEGER PRIMARY KEY,
+                    book_url TEXT,
+                    name TEXT, 
+                    chapter_url TEXT, 
+                    release_date TEXT);",
                     (),
                 ) {
                     errors.push(e);
@@ -55,8 +90,9 @@ impl DataManager {
         url: String,
     ) -> Result<Option<Book>, Box<dyn std::error::Error>> {
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
-        let mut stmt = conn
-            .prepare("SELECT source, url, name, image, in_library FROM books WHERE url = :url;")?;
+        let mut stmt = conn.prepare(
+            "SELECT source, book_url, name, image_url, in_library FROM books WHERE book_url = :url;",
+        )?;
 
         let book_iter = stmt.query_map(&[(":url", &url)], |row| {
             Ok(Book::new(
@@ -85,8 +121,9 @@ impl DataManager {
         }
 
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
-        let mut stmt = conn
-            .prepare("SELECT source, url, name, image, in_library FROM books WHERE url = :url;")?;
+        let mut stmt = conn.prepare(
+            "SELECT source, book_url, name, image_url, in_library FROM books WHERE book_url = :url;",
+        )?;
 
         let mut book_iter = stmt.query_map(&[(":url", &url)], |row| {
             Ok(Book::new(
@@ -122,7 +159,7 @@ impl DataManager {
     fn add_book(&mut self, book: Book) -> Result<(), Box<dyn std::error::Error>> {
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
         conn.execute(
-            "INSERT INTO books (source, name, url, image, in_library) values (?1, ?2, ?3 ,?4, ?5)",
+            "INSERT INTO books (source, name, book_url, image_url, in_library) values (?1, ?2, ?3 ,?4, ?5)",
             [
                 book.source.clone(),
                 book.name.clone(),
@@ -142,7 +179,7 @@ impl DataManager {
     fn update_book(&mut self, book: Book) -> Result<(), Box<dyn std::error::Error>> {
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
         _ = conn.execute(
-            "UPDATE books SET source = ?1, name = ?2, url = ?3, image = ?4, in_library = ?5 WHERE url = ?3;",
+            "UPDATE books SET source = ?1, name = ?2, book_url = ?3, image_url = ?4, in_library = ?5 WHERE book_url = ?3;",
             [
                 book.source.clone(),
                 book.name.clone(),
@@ -163,7 +200,7 @@ impl DataManager {
     pub fn get_library_books(&self) -> Result<Vec<Book>, Box<dyn std::error::Error>> {
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
         let mut stmt = conn
-            .prepare("SELECT source, url, name, image, in_library FROM books WHERE in_library = 1")
+            .prepare("SELECT source, book_url, name, image_url, in_library FROM books WHERE in_library = 1")
             .unwrap();
 
         let book_iter = stmt
@@ -216,7 +253,7 @@ impl DataManager {
         };
 
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
-        let mut stmt = conn.prepare("SELECT image FROM thumbnails WHERE url = :url;")?;
+        let mut stmt = conn.prepare("SELECT image_data FROM thumbnails WHERE book_url = :url;")?;
 
         let mut image_iter = stmt.query_map(&[(":url", &book.url)], |row| {
             Ok(row.get::<usize, Vec<u8>>(0)?)
@@ -236,7 +273,7 @@ impl DataManager {
         book: &Book,
     ) -> Result<Option<bytes::Bytes>, Box<dyn std::error::Error>> {
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
-        let mut stmt = conn.prepare("SELECT image FROM thumbnails WHERE url = :url;")?;
+        let mut stmt = conn.prepare("SELECT image_data FROM thumbnails WHERE book_url = :url;")?;
 
         let mut image_iter = stmt.query_map(&[(":url", &book.url)], |row| {
             Ok(row.get::<usize, Vec<u8>>(0)?)
@@ -260,14 +297,14 @@ impl DataManager {
             Ok(Some(_)) => {
                 let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
                 conn.execute(
-                    "UPDATE thumbnails SET image = ?2 WHERE url = ?1;",
+                    "UPDATE thumbnails SET image_data = ?2 WHERE book_url = ?1;",
                     (book.url.clone(), bytes.to_vec()),
                 )
             }
             _ => {
                 let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
                 conn.execute(
-                    "INSERT INTO thumbnails (url, image) values (?1, ?2)",
+                    "INSERT INTO thumbnails (book_url, image_data) values (?1, ?2)",
                     (book.url.clone(), bytes.to_vec()),
                 )
             }
@@ -293,7 +330,7 @@ impl DataManager {
 
         let conn = rusqlite::Connection::open(self.storage_path.join(Self::STORAGE_FILE))?;
         let _ = conn.execute(
-            "INSERT INTO thumbnails (url, image) values (?1, ?2)",
+            "INSERT INTO thumbnails (book_url, image_data) values (?1, ?2)",
             (&book.url.clone(), &bytes.to_vec()),
         )?;
 

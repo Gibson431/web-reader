@@ -1,6 +1,6 @@
 pub mod royalroad;
-use super::book::Book;
-use super::chapter::Chapter;
+use super::Book;
+use super::Chapter;
 use async_trait::async_trait;
 
 #[async_trait]

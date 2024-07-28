@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::core::book::Book;
+use crate::core::Book;
 
 use cosmic::iced::alignment::{Horizontal, Vertical};
 use cosmic::iced::{Alignment, Length, Padding, Size};
@@ -8,8 +8,34 @@ use cosmic::{theme, Apply, Element};
 use fuzzy_matcher::FuzzyMatcher;
 use itertools::Itertools;
 
+// #[derive(Debug, Clone)]
+// pub enum Message {
+//     LibraryLoad,
+//     /// Toggles to in_library flag for cache and db for book
+//     LibraryToggle(Book),
+
+//     /// Searches the library db (unused)
+//     LibrarySearch(String),
+
+//     /// Callback for changing the library text input field
+//     /// Is used for the library view's fuzzy search
+//     LibraryInputChanged(String),
+
+//     /// The result for the library search
+//     LibraryResult(Vec<String>),
+
+//     /// Does nothing
+//     Ignore,
+// }
+
+// impl From<Message> for crate::app::Message {
+//     fn from(message: Message) -> Self {
+//         crate::app::Message::LibraryMessage(message)
+//     }
+// }
+
 impl App {
-    pub fn view_library(&self, size: Size) -> Element<Message> {
+    pub fn view_library(&self, size: Size) -> Element<crate::app::Message> {
         let spacing = theme::active().cosmic().spacing;
         let item_width = 180;
         let item_height = 400;

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Display;
 
 use crate::app::*;
-use crate::core::book::Book;
+use crate::core::Book;
 use crate::fl;
 use cosmic::app::{Command, Core};
 use cosmic::iced::alignment::{Horizontal, Vertical};
